@@ -1,0 +1,651 @@
+#include <webots/robot.h>
+#include <webots/differential_wheels.h>
+#include <webots/distance_sensor.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+#define TIME_STEP 16
+
+// Q_SIZE = 6*3^0 + 6*3^1 + 6*3^2  + 6*3^3
+#define Q_SIZE 256
+#define ACTIONS_SIZE 5
+
+const double gama = 0.9;
+const double alpha = 0.1;
+int iterations = 10;
+
+double Q[Q_SIZE][ACTIONS_SIZE];
+int P[Q_SIZE];
+int currentState;
+
+WbDeviceTag distance_sensor[8];
+double sensors_value[8];
+double previous_sensors_value[8];
+
+double epsilon = 1;
+  
+void saveQ();
+int getState();
+int chooseAnAction();
+double maximum(int newState);
+void updateQ(int action, int reward, int newState);
+void initialize();
+int getReward(int newState);
+void updateEpsilon();
+void performAtion(int actionNumber);
+void printQ();
+int getDiscreteSensorValue(int sensorValue);
+int generateStateValue(int v1, int v2, int v3, int v4);
+
+ 
+int main(int argc, char **argv)
+{
+	/* define variables */
+
+	int i, iterations = 0;
+	
+	/* necessary to initialize webots stuff */
+
+	wb_robot_init();
+
+	/* Get and enable the distance sensors. */
+
+	for (i = 0; i < 8; i++) {
+
+		char device_name[4];
+
+		/* get distance sensors */
+
+		sprintf(device_name, "ps%d", i);
+		distance_sensor[i] = wb_robot_get_device(device_name);
+		wb_distance_sensor_enable(distance_sensor[i],TIME_STEP*4);
+
+		previous_sensors_value[i] = wb_distance_sensor_get_value(distance_sensor[i]);
+	}
+
+	initialize();
+	
+	do {
+
+		currentState = getState();
+
+		int action = chooseAnAction();
+		performAtion(action);
+		int reward = getReward(getState());
+
+		printf("state: %d, action: %d, reward: %d, epsilon: %g\n", currentState, action, reward, epsilon);
+		
+		updateQ(action, reward, getState());
+		updateEpsilon();
+		//printQ();
+
+		for (i = 0; i < 8; i++) {
+			previous_sensors_value[i] = sensors_value[i];
+		}
+		
+		iterations ++;
+		
+		if(iterations > 100) {
+  	  saveQ();
+			iterations = 0;
+		}
+
+	} while (true);
+	
+	/* Enter here exit cleanup code */
+  
+	/* Necessary to cleanup webots stuff */
+
+	wb_robot_cleanup();
+
+	return 0;
+}
+
+void saveQ() {
+	int i, j;
+	FILE * matrix = fopen("QValues.txt", "w");
+	FILE * policy = fopen("policy.txt", "w");
+	for(i = 0; i < Q_SIZE; i++) {
+		int maxAction = 0;
+		for(j = 0; j < ACTIONS_SIZE; j++) {
+			if(j != ACTIONS_SIZE-1) {
+				fprintf(matrix, "%g,", Q[i][j]);
+			} else {
+				fprintf(matrix, "%g", Q[i][j]);
+			}
+			if(Q[i][j] > Q[i][maxAction]) {
+				maxAction = j;
+			}
+		}
+		fprintf(policy, "P[%d]=%d;\n",i, maxAction);
+		fprintf(matrix, "\n");
+	}
+	fclose(matrix);
+	fclose(policy);
+}
+
+int getDiscreteSensorValue(int sensorValue) {
+
+	if(sensorValue < 200) {
+		return 0;
+	}
+	if(sensorValue < 500) {
+		return 1;
+	}
+	if(sensorValue < 800) {
+		return 2;
+	}
+
+	return 3;
+}
+
+int generateStateValue(int v1, int v2, int v3, int v4) {
+	return getDiscreteSensorValue(v1) + getDiscreteSensorValue(v2) * 4 + getDiscreteSensorValue(v3) * 16 + getDiscreteSensorValue(v4) * 64;
+}
+
+int getState() {
+
+	int i;
+
+	/* get sensors values */
+
+	for (i = 0; i < 8; i++) {
+		sensors_value[i] = wb_distance_sensor_get_value(distance_sensor[i]);
+	}
+
+	return generateStateValue(sensors_value[0], sensors_value[5], sensors_value[6], sensors_value[7]);
+}
+
+int chooseAnAction(){
+//En este caso, el agente elige para un estado dado,
+//la acción que maximiza el estimado de Q(s,a) con probabilidad (1-ε)
+//cualquier acción al azar con probabilidad ε.
+
+	double random = (double)rand() / RAND_MAX;
+  
+	if(random > (1 - epsilon)) {
+		// devuelvo uno random
+		int action_random = (int)(((double)rand() / RAND_MAX) * 5);
+		if(action_random == 5) {
+			return 4;
+		}
+		return action_random;
+	} else {
+		// devuelvo el maximo
+		int i;
+		int maxAction = 0;
+		for(i = 0; i < ACTIONS_SIZE; i ++) {
+			if(Q[currentState][i] > Q[currentState][maxAction]) {
+				maxAction = i;
+			}
+		}
+
+		return maxAction;
+	}
+	
+	/*return P[currentState];*/
+}
+
+double maximum(int newState){
+	int i;
+  int maxAction = 0;
+	for(i = 0; i < ACTIONS_SIZE; i ++) {
+		if(Q[newState][i] > Q[newState][maxAction]) {
+			maxAction = i;
+		}
+	}
+	return Q[newState][maxAction];
+}
+
+void updateQ(int action, int reward, int newState) {
+	//Q(s, a) ← Q(s, a) + α [r + γ max a’ Q(s’, a’) - Q(s, a)]
+//Q[newState][action] = Q[newState][action] + action * (reward + gama * maximum(newState));
+  Q[currentState][action] = Q[currentState][action] + alpha * (reward + gama * maximum(newState));
+}
+
+int getReward(int newState){
+  
+  /*int leftMaxDistance = 2500;
+  int leftMinDistance = 100;
+  
+  int frontMaxDistance = 100;
+  
+  int leftDifference = 400;
+  
+  int diagonalMinDistance = 2000;
+  
+  if(sensors_value[6] > diagonalMinDistance || sensors_value[1] > frontMaxDistance) {
+  	return -3;
+  }*/
+  
+  
+  /*if((previous_sensors_value[0] > frontMaxDistance && sensors_value[0] < frontMaxDistance)
+		|| (previous_sensors_value[7] > frontMaxDistance && sensors_value[7] < frontMaxDistance)) {
+
+		if(sensors_value[1] > frontMaxDistance || sensors_value[2] > frontMaxDistance) {
+			return -2;
+		}
+		return 1;
+	}
+  
+  
+  if(sensors_value[5] > leftMinDistance && sensors_value[5] < leftMaxDistance) {
+  
+		if(sensors_value[0] > frontMaxDistance || sensors_value[7] > frontMaxDistance) {
+			return -1;
+		}
+		
+		if(sensors_value[6] > sensors_value[5]) {
+			return -1;
+		}
+	
+  	if((previous_sensors_value[5] - sensors_value[5]) > leftDifference
+  		|| (previous_sensors_value[5] - sensors_value[5]) < -leftDifference) {
+  		return 0;
+		}
+		
+		return 2;
+  } else {
+  	if(sensors_value[0] > frontMaxDistance || sensors_value[7] > frontMaxDistance) {
+		  if(sensors_value[0] < sensors_value[7] && previous_sensors_value[7] > sensors_value[7]) {
+		  	return 1;
+		  }
+		}
+  }
+  
+  return -2;*/
+  
+  
+  /*int leftMaxDistance = 2500;
+  int leftMinDistance = 100;
+  
+  int frontMaxDistance = 100;
+  
+  int leftDifference = 400;
+  
+  if(sensors_value[5] > leftMinDistance && sensors_value[5] < leftMaxDistance) {
+  	
+  	if(sensors_value[0] > frontMaxDistance || sensors_value[7] > frontMaxDistance) {
+  		return -1;
+  	}
+		
+		if((previous_sensors_value[0] > frontMaxDistance && sensors_value[0] < frontMaxDistance)
+			|| (previous_sensors_value[7] > frontMaxDistance && sensors_value[7] < frontMaxDistance)) {
+			return 3;
+		}
+  	
+  	if((previous_sensors_value[5] - sensors_value[5]) > leftDifference
+  		|| (previous_sensors_value[5] - sensors_value[5]) < -leftDifference) {
+  		return 0;
+		}
+		
+		return 2;
+  }
+  
+  if(sensors_value[0] > frontMaxDistance || sensors_value[1] > frontMaxDistance 
+  	|| sensors_value[2] > frontMaxDistance || sensors_value[7] > frontMaxDistance) {
+  	return -2;
+  }
+  
+	if((previous_sensors_value[0] > frontMaxDistance && sensors_value[0] < frontMaxDistance)
+		|| (previous_sensors_value[1] > frontMaxDistance && sensors_value[1] < frontMaxDistance)
+		|| (previous_sensors_value[2] > frontMaxDistance && sensors_value[2] < frontMaxDistance)
+		|| (previous_sensors_value[7] > frontMaxDistance && sensors_value[7] < frontMaxDistance)) {
+		return 0;
+	}
+  
+  return -2;*/
+  
+  
+  
+  int leftMaxDistance = 2500;
+  int leftMinDistance = 100;
+  
+  int frontMaxDistance = 100;
+  
+  int leftDifference = 400;
+  
+  if(sensors_value[5] > leftMinDistance && sensors_value[5] < leftMaxDistance) {
+  	
+  	if(sensors_value[0] > frontMaxDistance || sensors_value[7] > frontMaxDistance) {
+  		return -1;
+  	}
+		
+  	if((previous_sensors_value[5] - sensors_value[5]) > leftDifference
+  		|| (previous_sensors_value[5] - sensors_value[5]) < -leftDifference) {
+  		return 0;
+		}
+		
+		return 2;
+  }
+  
+  return -2;
+}
+
+void updateEpsilon() {
+	double decrementRate = 0.001;
+  if(epsilon >= decrementRate) {
+    epsilon = epsilon - decrementRate;
+  } else {
+    epsilon = 0;
+  }
+}
+
+void performAtion(int actionNumber) {
+  double speed[2];
+	if(actionNumber == 0) {
+	// seguir derecho
+		speed[0] = 0;
+		speed[1] = 0;
+	} else if(actionNumber == 1) {
+	// girar 45 a la izquierda
+		speed[0] = -800;
+		speed[1] = 800;
+	} else if(actionNumber == 2) {
+	// girar 45 a la derecha
+		speed[0] = 800;
+		speed[1] = -800;
+	} else if(actionNumber == 3) {
+	// girar 10 a la izquierda
+		speed[0] = -300;
+		speed[1] = 300;
+	} else if(actionNumber == 4) {
+	// girar 10 a la derecha
+		speed[0] = 300;
+		speed[1] = -300;
+	}
+
+	int i;
+
+	for(i=0; i<2; i++) {
+		wb_differential_wheels_set_speed(speed[0],speed[1]);
+		wb_robot_step(TIME_STEP);
+	}
+
+	speed[0] = 400;
+	speed[1] = 400;
+
+	for(i=0; i<2; i++) {
+		wb_differential_wheels_set_speed(speed[0],speed[1]);
+		wb_robot_step(TIME_STEP);
+	}
+}
+
+void printQ() {
+	int i, j;
+	printf("Q: \n");
+	for(i = 0; i < 20; i++) {
+		for(j = 0; j < ACTIONS_SIZE; j++) {
+			printf("%g ", Q[i][j]);
+		}
+		printf("\n");
+	}
+}
+
+void initialize() {
+	int i, j;
+	for(i = 0; i < Q_SIZE; i++) {
+		for(j = 0; j < ACTIONS_SIZE; j++) {
+			Q[i][j] = 0;
+		}
+	}
+	
+P[0]=4;
+P[1]=1;
+P[2]=1;
+P[3]=2;
+P[4]=3;
+P[5]=0;
+P[6]=0;
+P[7]=0;
+P[8]=1;
+P[9]=0;
+P[10]=0;
+P[11]=0;
+P[12]=0;
+P[13]=0;
+P[14]=0;
+P[15]=0;
+P[16]=4;
+P[17]=0;
+P[18]=0;
+P[19]=0;
+P[20]=3;
+P[21]=0;
+P[22]=0;
+P[23]=0;
+P[24]=2;
+P[25]=0;
+P[26]=0;
+P[27]=0;
+P[28]=4;
+P[29]=0;
+P[30]=0;
+P[31]=0;
+P[32]=2;
+P[33]=0;
+P[34]=0;
+P[35]=0;
+P[36]=2;
+P[37]=0;
+P[38]=0;
+P[39]=0;
+P[40]=2;
+P[41]=2;
+P[42]=2;
+P[43]=0;
+P[44]=4;
+P[45]=0;
+P[46]=0;
+P[47]=0;
+P[48]=2;
+P[49]=0;
+P[50]=0;
+P[51]=0;
+P[52]=0;
+P[53]=0;
+P[54]=0;
+P[55]=0;
+P[56]=2;
+P[57]=0;
+P[58]=1;
+P[59]=0;
+P[60]=4;
+P[61]=0;
+P[62]=0;
+P[63]=0;
+P[64]=1;
+P[65]=2;
+P[66]=1;
+P[67]=0;
+P[68]=0;
+P[69]=0;
+P[70]=0;
+P[71]=0;
+P[72]=2;
+P[73]=0;
+P[74]=0;
+P[75]=0;
+P[76]=1;
+P[77]=0;
+P[78]=0;
+P[79]=0;
+P[80]=1;
+P[81]=1;
+P[82]=0;
+P[83]=0;
+P[84]=0;
+P[85]=0;
+P[86]=0;
+P[87]=0;
+P[88]=2;
+P[89]=1;
+P[90]=1;
+P[91]=0;
+P[92]=2;
+P[93]=1;
+P[94]=1;
+P[95]=0;
+P[96]=3;
+P[97]=0;
+P[98]=0;
+P[99]=0;
+P[100]=2;
+P[101]=0;
+P[102]=0;
+P[103]=0;
+P[104]=3;
+P[105]=0;
+P[106]=1;
+P[107]=1;
+P[108]=1;
+P[109]=1;
+P[110]=0;
+P[111]=1;
+P[112]=2;
+P[113]=0;
+P[114]=0;
+P[115]=0;
+P[116]=2;
+P[117]=1;
+P[118]=0;
+P[119]=0;
+P[120]=3;
+P[121]=1;
+P[122]=0;
+P[123]=0;
+P[124]=1;
+P[125]=4;
+P[126]=0;
+P[127]=0;
+P[128]=1;
+P[129]=2;
+P[130]=0;
+P[131]=3;
+P[132]=0;
+P[133]=0;
+P[134]=0;
+P[135]=0;
+P[136]=0;
+P[137]=2;
+P[138]=2;
+P[139]=0;
+P[140]=0;
+P[141]=0;
+P[142]=0;
+P[143]=0;
+P[144]=0;
+P[145]=0;
+P[146]=0;
+P[147]=0;
+P[148]=2;
+P[149]=2;
+P[150]=0;
+P[151]=0;
+P[152]=0;
+P[153]=0;
+P[154]=0;
+P[155]=3;
+P[156]=0;
+P[157]=2;
+P[158]=2;
+P[159]=0;
+P[160]=2;
+P[161]=0;
+P[162]=0;
+P[163]=0;
+P[164]=2;
+P[165]=1;
+P[166]=0;
+P[167]=0;
+P[168]=0;
+P[169]=0;
+P[170]=0;
+P[171]=0;
+P[172]=0;
+P[173]=0;
+P[174]=0;
+P[175]=2;
+P[176]=2;
+P[177]=0;
+P[178]=0;
+P[179]=0;
+P[180]=3;
+P[181]=0;
+P[182]=0;
+P[183]=0;
+P[184]=0;
+P[185]=0;
+P[186]=0;
+P[187]=0;
+P[188]=1;
+P[189]=4;
+P[190]=2;
+P[191]=2;
+P[192]=1;
+P[193]=0;
+P[194]=0;
+P[195]=4;
+P[196]=1;
+P[197]=0;
+P[198]=0;
+P[199]=0;
+P[200]=0;
+P[201]=0;
+P[202]=0;
+P[203]=0;
+P[204]=0;
+P[205]=0;
+P[206]=0;
+P[207]=0;
+P[208]=0;
+P[209]=2;
+P[210]=1;
+P[211]=0;
+P[212]=0;
+P[213]=0;
+P[214]=0;
+P[215]=3;
+P[216]=0;
+P[217]=0;
+P[218]=0;
+P[219]=2;
+P[220]=0;
+P[221]=0;
+P[222]=1;
+P[223]=0;
+P[224]=1;
+P[225]=0;
+P[226]=0;
+P[227]=1;
+P[228]=0;
+P[229]=2;
+P[230]=2;
+P[231]=4;
+P[232]=0;
+P[233]=0;
+P[234]=0;
+P[235]=1;
+P[236]=0;
+P[237]=0;
+P[238]=0;
+P[239]=1;
+P[240]=3;
+P[241]=1;
+P[242]=2;
+P[243]=0;
+P[244]=4;
+P[245]=1;
+P[246]=3;
+P[247]=0;
+P[248]=4;
+P[249]=2;
+P[250]=0;
+P[251]=3;
+P[252]=0;
+P[253]=3;
+P[254]=4;
+P[255]=1;
+
+}
+

@@ -1,0 +1,21 @@
+#
+# Standard Makefile for the crosscompilation of an e-puck
+#
+# Author: fabien.rohrer@cyberbotics.com
+# Date:   January, 2008
+#
+#You can modify the source files by uncommenting the following line:
+#C_SOURCES = ex1.c ex2.c
+
+ifndef WEBOTS_HOME_PATH
+ifeq ($(OS),Windows_NT)
+nullstring :=
+space := $(nullstring) # a string containing a single space
+WEBOTS_HOME_PATH=$(subst $(space),\ ,$(strip $(subst \,/,$(WEBOTS_HOME))))
+else
+WEBOTS_HOME_PATH=$(WEBOTS_HOME)
+endif
+endif
+
+include $(WEBOTS_HOME_PATH)/transfer/e-puck/libepuck/Makefile.include
+
